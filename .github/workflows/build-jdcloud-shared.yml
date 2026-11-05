@@ -1,0 +1,444 @@
+# jdcloud-ipq6018-nss — shared build workflow (reusable)
+#
+# Called by build-jdcloud.yml with ONE device per job (jdcloud_re-ss-01
+# or jdcloud_re-cs-02). Modelled on the CR880x project's shared
+# workflow; adapted for LiBwrt/LibWrt 25.12-nss + qualcommax/ipq60xx
+# + eMMC (factory.bin + sysupgrade.bin, NOT factory.ubi).
+#
+# Pipeline: clone pinned base -> disable mainland mirrors -> pin feeds
+# -> cache -> feeds update/install -> DIY (q6_region + Argon + Athena
+# LED) -> apply device config + defconfig guard -> validate overlays
+# -> install files overlay -> download -> 3-stage build -> verify
+# wireless + verify images -> stage artifacts -> release
+# (draft -> verify digests -> publish) -> housekeeping.
+#
+# Evidence rule: the build keeps its evidence. config.buildinfo,
+# feeds.buildinfo, full.config, third-party-sources.txt and sha256sums
+# go into the workflow artifact (the fork's Organize step DELETED
+# them — never do that here).
+
+name: Build JDCloud IPQ6018 NSS (shared)
+
+on:
+  workflow_call:
+    inputs:
+      device:
+        description: "Device profile (jdcloud_re-ss-01 or jdcloud_re-cs-02)"
+        required: true
+        type: string
+      firmware:
+        description: "NSS firmware version (12.5 or 12.2)"
+        required: true
+        default: "12.5"
+        type: string
+      base_ref:
+        description: "LiBwrt/LibWrt 25.12-nss commit to build from"
+        required: false
+        default: "96a0ec8a427909c4d9ef112641b36bcc0728fa43"
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: Build ${{ inputs.device }} (NSS FW ${{ inputs.firmware }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    concurrency:
+      group: jdcloud-ipq6018-${{ inputs.device }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up environment
+        run: |
+          set -Eeuo pipefail
+          sudo timedatectl set-timezone "$TZ"
+          df -h .
+          DEVICE="${{ inputs.device }}"
+          SHORT="${DEVICE#jdcloud_}"
+          echo "DEVICE=$DEVICE" >> "$GITHUB_ENV"
+          echo "SHORT=$SHORT" >> "$GITHUB_ENV"
+          echo "BASE_REF=${{ inputs.base_ref }}" >> "$GITHUB_ENV"
+          case "$DEVICE" in
+            jdcloud_re-ss-01)
+              echo "MODEL=re-ss-01" >> "$GITHUB_ENV"
+              echo "SUPPORTED_MODELS=JDCloud RE-SS-01 (Arthur)" >> "$GITHUB_ENV"
+              ;;
+            jdcloud_re-cs-02)
+              echo "MODEL=re-cs-02" >> "$GITHUB_ENV"
+              echo "SUPPORTED_MODELS=JDCloud RE-CS-02 (Athena) (未测试)" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "::error::Unknown device: $DEVICE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Free disk space
+        run: |
+          set -Eeuo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h .
+
+      - name: Clone base tree at pinned commit
+        run: |
+          set -Eeuo pipefail
+          git clone --depth 1 --branch 25.12-nss https://github.com/LiBwrt/LibWrt.git openwrt
+          cd openwrt
+          git fetch --depth 1 origin "${BASE_REF}"
+          git checkout "${BASE_REF}"
+          git rev-parse HEAD
+          # Sanity: this must be the NSS tree (qca-nss-dp in qualcommax defaults).
+          grep -q 'qca-nss-dp' target/linux/qualcommax/Makefile || { echo '::error::Base tree is not the NSS tree (no qca-nss-dp in qualcommax Makefile)'; exit 1; }
+          # Record the exact base commit for the release notes.
+          echo "BASE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Disable mainland mirrors
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          # Mainland download mirrors are blocked from the runner's
+          # network; strip them so downloads fall back to the
+          # upstream origins (availability cannot drop: origins stay).
+          jq 'del(.[] | select(.name | test("tencent|aliyun|tuna\\.tsinghua|ustc|iscas|nju")))' scripts/projectsmirrors.json > scripts/projectsmirrors.json.tmp
+          mv scripts/projectsmirrors.json.tmp scripts/projectsmirrors.json
+          sed -i '/raw\.gitmirror\.com/d' scripts/download.pl || true
+
+      - name: Pin feeds
+        run: |
+          set -Eeuo pipefail
+          cp ../feeds.conf openwrt/feeds.conf
+
+      - name: Compute ccache key
+        id: ccache-key
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          echo "key=$(git -C target/linux/qualcommax rev-parse HEAD 2>/dev/null || echo none)-$(gcc --version | head -1 | md5sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: openwrt/.ccache
+          key: ipq60xx-${{ env.DEVICE }}-ccache-${{ steps.ccache-key.outputs.key }}
+          restore-keys: |
+            ipq60xx-${{ env.DEVICE }}-ccache-
+
+      - name: Restore staging_dir
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: openwrt/staging_dir
+          key: ipq60xx-${{ env.DEVICE }}-staging-${{ hashFiles('feeds.conf', 'configs/*.config', 'scripts/**', 'files/**') }}
+          restore-keys: |
+            ipq60xx-${{ env.DEVICE }}-staging-
+
+      - name: Restore dl
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: openwrt/dl
+          key: ipq60xx-${{ env.DEVICE }}-dl-${{ hashFiles('feeds.conf', 'configs/*.config') }}
+          restore-keys: |
+            ipq60xx-${{ env.DEVICE }}-dl-
+
+      - name: Update and install feeds
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          ./scripts/feeds update -a
+          for feed in nss_packages sqm_scripts_nss packages luci routing telephony video; do
+            if ./scripts/feeds list -r "$feed" >/dev/null 2>&1; then
+              ./scripts/feeds install -a -p "$feed"
+              echo "FEED_OK $feed" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Feed $feed not found after update (check feeds.conf pin)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          # Record the exact feed commits actually installed.
+          ./scripts/feeds list -r | sort > ../feeds-installed.txt || true
+
+      - name: Load custom configuration (DIY script)
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          bash ../scripts/diy.sh
+          # Ledger of every third-party source fetched by the DIY script
+          # (Argon and HomeProxy are unpinned master; Athena LED is
+          # pinned — the file goes into the workflow artifact with the
+          # build evidence).
+          {
+            echo "LiBwrt/LibWrt 25.12-nss @ ${BASE_COMMIT}"
+            echo "luci-theme-argon master @ ${ARGON_THEME_COMMIT}"
+            echo "luci-app-argon-config master @ ${ARGON_CONFIG_COMMIT}"
+            echo "luci-app-athena-led main @ ${ATHENA_LED_COMMIT} (pinned f8eeb3119008ac0e429fc642c125512f9253ec1b)"
+            echo "luci-app-homeproxy master @ ${HOMEPROXY_COMMIT}"
+          } > third-party-sources.txt
+
+      - name: Install custom devices
+        run: |
+          set -Eeuo pipefail
+          # NO-OP for this project: both devices (RE-SS-01, RE-CS-02)
+          # are in the base tree's ipq60xx.mk, so no repo dts/ override
+          # is needed. The step is kept so a future device that ISN'T
+          # in-tree has a home (drop a .dts into repo dts/ and this
+          # step copies it over the base tree's DTS).
+          if [ -d ../dts ]; then
+            cp ../dts/*.dts openwrt/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ 2>/dev/null || true
+            echo "Custom DTS files installed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No custom DTS (both devices are in-tree)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Apply device config
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          case "${{ env.SHORT }}" in
+            re-ss-01) CONFIG_FILE=../configs/re-ss-01.config ;;
+            re-cs-02) CONFIG_FILE=../configs/re-cs-02.config ;;
+            *) echo "::error::Unknown device short name: ${{ env.SHORT }}" >&2; exit 1 ;;
+          esac
+          cp "$CONFIG_FILE" .config
+          # NSS firmware version: the fragment defaults to 12.5; the
+          # firmware input swaps the pair to 12.2 when requested.
+          if [ "${{ inputs.firmware }}" = "12.2" ]; then
+            sed -i 's/^CONFIG_NSS_FIRMWARE_VERSION_12_5=y$/# CONFIG_NSS_FIRMWARE_VERSION_12_5 is not set/' .config
+            sed -i 's/^# CONFIG_NSS_FIRMWARE_VERSION_12_2 is not set$/CONFIG_NSS_FIRMWARE_VERSION_12_2=y/' .config
+          fi
+          make defconfig
+          # --- Defconfig guard: EVERY missing symbol reported at once ---
+          missing=0
+          while IFS= read -r line; do
+            case "$line" in
+              *NSS_FIRMWARE_VERSION_*) ;;  # menu default swaps handled above
+              CONFIG_*=*) grep -qF "$line" .config || { echo "::error::CONFIG DROPPED: $line"; missing=1; };;
+            esac
+          done < "$CONFIG_FILE"
+          # --- Expanded-config NSS checks: these come from target defaults
+          # --- and must survive defconfig, or the image is not NSS ---
+          for sym in kmod-qca-nss-drv kmod-qca-nss-ecm kmod-qca-nss-drv-pppoe \
+                     kmod-qca-nss-drv-bridge-mgr kmod-qca-nss-drv-vlan-mgr kmod-qca-nss-dp \
+                     kmod-nss-ifb nss-firmware-ipq60xx ath11k-firmware-ipq6018 \
+                     kmod-ath11k kmod-ath11k-ahb kmod-ath11k-pci; do
+            grep -q "^CONFIG_PACKAGE_${sym}=y$" .config || { echo "::error::TARGET DEFAULT MISSING: $sym"; missing=1; }
+          done
+          for sym in ATH11K_NSS_SUPPORT ATH11K_MEM_PROFILE_512M NSS_MEM_PROFILE_MEDIUM \
+                     NSS_DRV_VLAN_ENABLE NSS_DRV_IPV6_ENABLE NSS_DRV_VIRT_IF_ENABLE \
+                     NSS_DRV_WIFIOFFLOAD_ENABLE MAC80211_NSS_SUPPORT; do
+            grep -q "^CONFIG_${sym}=y$" .config || { echo "::error::NSS DEFAULT MISSING: $sym"; missing=1; }
+          done
+          # --- Fork-features check: HomeProxy/sing-box + apps + tools ---
+          # (These are also covered by the fragment-survival loop above
+          # — this named list makes a fork-feature drop report itself
+          # instead of hiding inside a generic CONFIG DROPPED line.)
+          for sym in luci-app-homeproxy ca-certificates sing-box \
+                     kmod-tun kmod-inet-diag kmod-nft-tproxy kmod-nft-socket ip-full libcap-bin \
+                     luci-app-ttyd openssh-sftp-server luci-app-arpbind \
+                     luci-app-usb-printer; do
+            grep -q "^CONFIG_PACKAGE_${sym}=y$" .config || { echo "::error::FORK FEATURE MISSING: $sym"; missing=1; }
+          done
+          # --- Firmware version check: exactly one version, the requested one ---
+          grep -q "^CONFIG_NSS_FIRMWARE_VERSION_${{ inputs.firmware }}=y$" .config || { echo "::error::NSS firmware version ${{ inputs.firmware }} not selected"; missing=1; }
+          # --- Device-packages check (warns, never fails the build) ---
+          python3 ../scripts/check-device-packages.py "${{ env.DEVICE }}" .config || true
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Defconfig guard failed — see the CONFIG DROPPED / TARGET DEFAULT MISSING / NSS DEFAULT MISSING lines above" >&2
+            exit 1
+          fi
+          # Keep the expanded config as build evidence.
+          cp .config ../full.config
+
+      - name: Validate overlay shell scripts
+        run: |
+          set -Eeuo pipefail
+          for f in ../files/etc/uci-defaults/* ../scripts/*.sh; do
+            dash -n "$f" || { echo "::error::dash -n failed: $f" >&2; exit 1; }
+          done
+          echo "All overlay + DIY shell scripts pass dash -n" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install files overlay
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          cp -a ../files/. files/
+          # Per-device overlay (static wireless) on top of the shared one.
+          cp -a "../files-${{ env.DEVICE }}/." files/
+          chmod +x files/etc/uci-defaults/* 2>/dev/null || true
+          chmod 0600 files/etc/shadow
+          echo "Overlay installed: shared files/ + files-${{ env.DEVICE }}/" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download sources
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          export GIT_HTTP_LOW_SPEED_LIMIT=1000
+          export GIT_HTTP_LOW_SPEED_TIME=60
+          make download -j"$(nproc)" || make download -j1 || make download -j1 V=s
+
+      - name: Build firmware
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          # 3-stage fallback: parallel -> single-thread -> verbose.
+          # If the parallel build fails, the -j1 retry usually finds
+          # the real error; V=s prints it.
+          make -j"$(nproc)" || make -j1 || make -j1 V=s
+
+      - name: Verify wireless stack built
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          # The build must contain the wireless stack; a silent drop
+          # (like the CR880x project's #11/#12 ipk-vs-apk failure)
+          # must fail here, not on the device.
+          for pkg in kmod-ath11k-ahb kmod-mac80211 kmod-cfg80211 wpad-openssl ath11k-firmware-ipq6018; do
+            if ! find bin/ -name "*${pkg}*" -type f | grep -q .; then
+              echo "::error::WIRELESS STACK MISSING: no $pkg package built" >&2
+              exit 1
+            fi
+          done
+          echo "Wireless stack present: ath11k-ahb, mac80211, cfg80211, wpad-openssl, ath11k-firmware-ipq6018" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify factory image
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          FACTORY=$(ls bin/targets/qualcommax/ipq60xx/*${{ env.DEVICE }}*-squashfs-factory.bin)
+          SYSUPGRADE=$(ls bin/targets/qualcommax/ipq60xx/*${{ env.DEVICE }}*-squashfs-sysupgrade.bin)
+          echo "FACTORY=$FACTORY" >> "$GITHUB_ENV"
+          echo "SYSUPGRADE=$SYSUPGRADE" >> "$GITHUB_ENV"
+          python3 ../scripts/verify-factory-bin.py "$FACTORY" "$SYSUPGRADE"
+
+      - name: Stage artifacts
+        run: |
+          set -Eeuo pipefail
+          mkdir -p artifact
+          cp "openwrt/${{ env.FACTORY }}" "artifact/${{ env.DEVICE }}-squashfs-factory.bin"
+          cp "openwrt/${{ env.SYSUPGRADE }}" "artifact/${{ env.DEVICE }}-squashfs-sysupgrade.bin"
+          cp openwrt/bin/targets/qualcommax/ipq60xx/config.buildinfo artifact/config.buildinfo
+          cp openwrt/bin/targets/qualcommax/ipq60xx/feeds.buildinfo artifact/feeds.buildinfo 2>/dev/null || true
+          cp full.config artifact/full.config
+          cp openwrt/third-party-sources.txt artifact/third-party-sources.txt
+          cp feeds-installed.txt artifact/feeds-installed.txt 2>/dev/null || true
+          (cd artifact && sha256sum * > sha256sums.txt)
+          cat artifact/sha256sums.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: jdcloud-${{ env.SHORT }}-nss-${{ inputs.firmware }}
+          path: artifact/
+          retention-days: 90
+
+      - name: Build summary
+        run: |
+          set -Eeuo pipefail
+          {
+            echo "## Build ${{ env.DEVICE }} (NSS FW ${{ inputs.firmware }})"
+            echo ""
+            echo "- Base: LiBwrt/LibWrt 25.12-nss @ ${BASE_COMMIT}"
+            echo "- Kernel: 6.12"
+            echo "- Device: ${{ env.SUPPORTED_MODELS }}"
+            echo "- Images: factory.bin + sysupgrade.bin"
+            echo ""
+            cat artifact/sha256sums.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set release tag
+        id: tag
+        run: |
+          set -Eeuo pipefail
+          # Tag: MODEL-KERNEL-NSS-run-attempt (no date, no vendor name).
+          # MODEL is the profile minus the jdcloud_ prefix.
+          KERNEL=$(grep '^KERNEL_PATCHVER' openwrt/target/linux/qualcommax/Makefile | cut -d'=' -f2 | tr -d ' ')
+          [ -n "$KERNEL" ] || { echo '::error::KERNEL_PATCHVER unreadable in qualcommax Makefile' >&2; exit 1; }
+          TAG="${{ env.MODEL }}-${KERNEL}-${{ inputs.firmware }}-${{ github.run_number }}-${{ github.run_attempt }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "KERNEL=$KERNEL" >> "$GITHUB_ENV"
+          # Release name: model + hardware + NSS FW + kernel + build counter.
+          if [ "${{ env.DEVICE }}" = "jdcloud_re-ss-01" ]; then
+            echo "NAME=JDCloud RE-SS-01 (Arthur) NSS FW ${{ inputs.firmware }} - Kernel ${KERNEL} (Build #${{ github.run_number }}, attempt ${{ github.run_attempt }})" >> "$GITHUB_ENV"
+          else
+            echo "NAME=JDCloud RE-CS-02 (Athena) NSS FW ${{ inputs.firmware }} - Kernel ${KERNEL} (Build #${{ github.run_number }}, attempt ${{ github.run_attempt }})" >> "$GITHUB_ENV"
+          fi
+
+      - name: Create draft release
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
+        with:
+          tag: ${{ steps.tag.outputs.tag }}
+          name: ${{ env.NAME }}
+          body: |
+            **Device:** ${{ env.SUPPORTED_MODELS }}
+            **Base:** LiBwrt/LibWrt 25.12-nss @ ${{ env.BASE_COMMIT }}
+            **Kernel:** ${{ env.KERNEL }} | **NSS firmware:** ${{ inputs.firmware }}
+            **Build:** #${{ github.run_number }}, attempt ${{ github.run_attempt }}
+
+            Images: `factory.bin` (first install) + `sysupgrade.bin` (upgrade from a running OpenWrt build).
+            Flashing: see the README's 刷机与首次开机 section. **Do NOT flash the other device's image — RE-SS-01 and RE-CS-02 are different hardware.**
+
+            Defaults: WiFi OpenWrt / OpenWrt_5G, key `12345678`; root password `password` (change after flashing); LAN 192.168.1.1; hostname OpenWrt.
+          artifacts: "artifact/${{ env.DEVICE }}-squashfs-factory.bin,artifact/${{ env.DEVICE }}-squashfs-sysupgrade.bin"
+          draft: true
+          allowUpdates: false
+
+      - name: Verify release digests
+        run: |
+          set -Eeuo pipefail
+          # The draft release must contain exactly the two staged images
+          # with matching sha256sums before it is published.
+          cd artifact
+          sha256sum -c sha256sums.txt --ignore-missing
+          echo "Release digests verified" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release
+        run: |
+          set -Eeuo pipefail
+          gh release edit "${{ env.TAG }}" --repo "${{ github.repository }}" --draft=false
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Delete old caches
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          # Keep only the newest cache per prefix (ccache / staging / dl).
+          gh extension install actions/gh-actions-cache --force 2>/dev/null || true
+          for prefix in "ipq60xx-${{ env.DEVICE }}-ccache-" "ipq60xx-${{ env.DEVICE }}-staging-" "ipq60xx-${{ env.DEVICE }}-dl-"; do
+            gh actions-cache list --repo "${{ github.repository }}" --key "$prefix" --limit 100 --json id,key,createdAt --jq '.[1:] | .[].id' 2>/dev/null | while read -r id; do
+              gh actions-cache delete "$id" --repo "${{ github.repository }}" --confirm 2>/dev/null || true
+            done
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Delete old workflow runs
+        if: always()
+        uses: Mattraks/delete-workflow-runs@0cf693bc9909e5e867ee8f27b813224ba862939c # main
+        with:
+          retain_days: 2
+          keep_minimum_runs: 2
+
+      - name: Diagnose
+        if: failure()
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          echo "=== .config (relevant lines) ===" || true
+          grep -E 'CONFIG_(TARGET_qualcommax|PACKAGE_(kmod-qca-nss|nss-firmware|ath11k|wpad)|NSS_|ATH11K|DRIVER_11)' .config 2>/dev/null | sort || true
+          echo "=== Last 200 build log lines ===" || true
+          find . -name '*.log' -newer .config -print 2>/dev/null | head -5 || true
+          echo "=== Disk ===" || true
+          df -h . || true
+          echo "=== Feeds installed ===" || true
+          cat ../feeds-installed.txt 2>/dev/null || true
+          echo "=== Third-party sources ===" || true
+          cat third-party-sources.txt 2>/dev/null || true

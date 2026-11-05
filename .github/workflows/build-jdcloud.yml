@@ -1,0 +1,74 @@
+# jdcloud-ipq6018-nss — build caller (thin)
+#
+# This file only chooses WHAT to build; the shared workflow
+# (build-jdcloud-shared.yml) does the building. Adding a device later
+# means adding a job here.
+#
+# Device selection maps to hardware:
+#   re-ss-01 = JDCloud RE-SS-01 (Arthur, IPQ6018, 512 MB, eMMC)
+#   re-cs-02 = JDCloud RE-CS-02 (Athena, IPQ6018 + QCN9074, UNTESTED)
+#   all      = build BOTH devices in one run (default)
+# Selecting the wrong device builds the wrong firmware — check the
+# mapping before you trigger.
+#
+# The inputs use SHORT names (re-ss-01 / re-cs-02); the jobs pass the
+# full profile name (jdcloud_re-ss-01 / jdcloud_re-cs-02) to the shared
+# workflow, which uses it for the config file, the overlay directory
+# and the release tag.
+
+name: Build JDCloud IPQ6018 NSS
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: "Device to build: all = RE-SS-01 + RE-CS-02 (same run, same HEAD, default); re-ss-01 = JDCloud RE-SS-01 (Arthur) only; re-cs-02 = JDCloud RE-CS-02 (Athena, UNTESTED) only"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - re-ss-01
+          - re-cs-02
+      firmware:
+        description: "NSS firmware version (12.5 is the default; 12.2 is the fallback if 12.5 breaks)"
+        required: true
+        default: "12.5"
+        type: choice
+        options:
+          - "12.5"
+          - "12.2"
+      base_ref:
+        description: "LiBwrt/LibWrt 25.12-nss commit to build from (default = pinned commit; only override for testing)"
+        required: false
+        default: "96a0ec8a427909c4d9ef112641b36bcc0728fa43"
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build-re-ss-01:
+    name: Build JDCloud RE-SS-01 (Arthur)
+    if: inputs.device == 'all' || inputs.device == 're-ss-01'
+    uses: ./.github/workflows/build-jdcloud-shared.yml
+    with:
+      device: jdcloud_re-ss-01
+      firmware: ${{ inputs.firmware }}
+      base_ref: ${{ inputs.base_ref }}
+    permissions:
+      contents: write
+      actions: write
+
+  build-re-cs-02:
+    name: Build JDCloud RE-CS-02 (Athena, UNTESTED)
+    if: inputs.device == 'all' || inputs.device == 're-cs-02'
+    uses: ./.github/workflows/build-jdcloud-shared.yml
+    with:
+      device: jdcloud_re-cs-02
+      firmware: ${{ inputs.firmware }}
+      base_ref: ${{ inputs.base_ref }}
+    permissions:
+      contents: write
+      actions: write
