@@ -5,12 +5,20 @@
 # workflow; adapted for LiBwrt/LibWrt 25.12-nss + qualcommax/ipq60xx
 # + eMMC (factory.bin + sysupgrade.bin, NOT factory.ubi).
 #
-# Pipeline: clone pinned base -> disable mainland mirrors -> pin feeds
-# -> cache -> feeds update/install -> DIY (q6_region + Argon + Athena
-# LED) -> apply device config + defconfig guard -> validate overlays
-# -> install files overlay -> download -> 3-stage build -> verify
-# wireless + verify images -> stage artifacts -> release
-# (draft -> verify digests -> publish) -> housekeeping.
+# Pipeline: clone pinned base -> pin feeds -> cache -> feeds
+# update/install -> DIY (q6_region + Argon + Athena LED) -> record
+# third-party sources -> apply device config + defconfig guard ->
+# validate overlays -> install files overlay -> download -> 3-stage
+# build -> verify wireless + verify images -> stage artifacts ->
+# release (draft -> verify digests -> publish) -> housekeeping.
+#
+# NOTE: there is NO "disable mainland mirrors" step here on purpose.
+# The reference projects (jeojeo1225 fork, laipeng668 CI) build fine
+# without one — download.pl falls back to the upstream origins when
+# a mirror is unreachable. A CR880x-style jq step was deleted: its
+# filter assumed the kuncy7 projectsmirrors.json shape (array of
+# objects) and fails on this tree's object-of-URL-arrays shape
+# (build #1, exit 5 — do not re-add it).
 #
 # Evidence rule: the build keeps its evidence. config.buildinfo,
 # feeds.buildinfo, full.config, third-party-sources.txt and sha256sums
@@ -82,6 +90,20 @@ jobs:
               ;;
           esac
 
+      - name: Install build dependencies
+        run: |
+          set -Eeuo pipefail
+          # OpenWrt build tools (CR880x parity; the fork installs the
+          # same set via its init script). The runner image does not
+          # guarantee them — notably gawk, which feeds' scan.awk needs
+          # (asort). Without this step a fresh runner can fail at
+          # ./scripts/feeds update.
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-setuptools rsync swig unzip zlib1g-dev file wget \
+            libelf-dev
+
       - name: Free disk space
         run: |
           set -Eeuo pipefail
@@ -101,17 +123,6 @@ jobs:
           grep -q 'qca-nss-dp' target/linux/qualcommax/Makefile || { echo '::error::Base tree is not the NSS tree (no qca-nss-dp in qualcommax Makefile)'; exit 1; }
           # Record the exact base commit for the release notes.
           echo "BASE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-
-      - name: Disable mainland mirrors
-        run: |
-          set -Eeuo pipefail
-          cd openwrt
-          # Mainland download mirrors are blocked from the runner's
-          # network; strip them so downloads fall back to the
-          # upstream origins (availability cannot drop: origins stay).
-          jq 'del(.[] | select(.name | test("tencent|aliyun|tuna\\.tsinghua|ustc|iscas|nju")))' scripts/projectsmirrors.json > scripts/projectsmirrors.json.tmp
-          mv scripts/projectsmirrors.json.tmp scripts/projectsmirrors.json
-          sed -i '/raw\.gitmirror\.com/d' scripts/download.pl || true
 
       - name: Pin feeds
         run: |
@@ -155,11 +166,17 @@ jobs:
           cd openwrt
           ./scripts/feeds update -a
           for feed in nss_packages sqm_scripts_nss packages luci routing telephony video; do
-            if ./scripts/feeds list -r "$feed" >/dev/null 2>&1; then
+            # Verify the feed actually cloned: `feeds list` can succeed
+            # from a stale index even when the checkout is missing, so
+            # the directory itself is the check. A missing feed fails
+            # here with its name instead of later at defconfig with a
+            # confusing dropped-symbol error.
+            if [ -d "feeds/$feed" ]; then
               ./scripts/feeds install -a -p "$feed"
               echo "FEED_OK $feed" >> "$GITHUB_STEP_SUMMARY"
             else
-              echo "::warning::Feed $feed not found after update (check feeds.conf pin)" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::Feed $feed not found after update (check feeds.conf pin)" >&2
+              exit 1
             fi
           done
           # Record the exact feed commits actually installed.
@@ -170,10 +187,19 @@ jobs:
           set -Eeuo pipefail
           cd openwrt
           bash ../scripts/diy.sh
+
+      - name: Record third-party sources
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
           # Ledger of every third-party source fetched by the DIY script
           # (Argon and HomeProxy are unpinned master; Athena LED is
           # pinned — the file goes into the workflow artifact with the
-          # build evidence).
+          # build evidence). This MUST be a separate step from the DIY
+          # step: diy.sh records the resolved commits via $GITHUB_ENV,
+          # which only becomes visible to LATER steps — reading them in
+          # the same step fails with "unbound variable" under set -u.
+          # Do not merge this back into the DIY step.
           {
             echo "LiBwrt/LibWrt 25.12-nss @ ${BASE_COMMIT}"
             echo "luci-theme-argon master @ ${ARGON_THEME_COMMIT}"
@@ -230,9 +256,13 @@ jobs:
                      kmod-ath11k kmod-ath11k-ahb kmod-ath11k-pci; do
             grep -q "^CONFIG_PACKAGE_${sym}=y$" .config || { echo "::error::TARGET DEFAULT MISSING: $sym"; missing=1; }
           done
+          # NOTE: MAC80211_NSS_SUPPORT itself lives only in the kernel
+          # config (set via config-$(CONFIG_PACKAGE_MAC80211_NSS_SUPPORT)
+          # in the mac80211 Makefile) — it never appears in the top-level
+          # .config, so it is checked here as its PACKAGE_ symbol.
           for sym in ATH11K_NSS_SUPPORT ATH11K_MEM_PROFILE_512M NSS_MEM_PROFILE_MEDIUM \
                      NSS_DRV_VLAN_ENABLE NSS_DRV_IPV6_ENABLE NSS_DRV_VIRT_IF_ENABLE \
-                     NSS_DRV_WIFIOFFLOAD_ENABLE MAC80211_NSS_SUPPORT; do
+                     NSS_DRV_WIFIOFFLOAD_ENABLE PACKAGE_MAC80211_NSS_SUPPORT; do
             grep -q "^CONFIG_${sym}=y$" .config || { echo "::error::NSS DEFAULT MISSING: $sym"; missing=1; }
           done
           # --- Fork-features check: HomeProxy/sing-box + apps + tools ---
@@ -248,7 +278,7 @@ jobs:
           # --- Firmware version check: exactly one version, the requested one ---
           grep -q "^CONFIG_NSS_FIRMWARE_VERSION_${{ inputs.firmware }}=y$" .config || { echo "::error::NSS firmware version ${{ inputs.firmware }} not selected"; missing=1; }
           # --- Device-packages check (warns, never fails the build) ---
-          python3 ../scripts/check-device-packages.py "${{ env.DEVICE }}" .config || true
+          python3 ../scripts/check-device-packages.py .config tmp/info/.targetinfo-qualcommax "${{ env.DEVICE }}" || true
           if [ "$missing" -ne 0 ]; then
             echo "::error::Defconfig guard failed — see the CONFIG DROPPED / TARGET DEFAULT MISSING / NSS DEFAULT MISSING lines above" >&2
             exit 1
@@ -408,12 +438,16 @@ jobs:
 
       - name: Delete old caches
         if: always()
+        continue-on-error: true
         run: |
           set -Eeuo pipefail
           # Keep only the newest cache per prefix (ccache / staging / dl).
+          # Housekeeping must never fail the build (CR880x parity:
+          # continue-on-error) — and the list command keeps its stderr
+          # so a failure is visible in the log instead of silent.
           gh extension install actions/gh-actions-cache --force 2>/dev/null || true
           for prefix in "ipq60xx-${{ env.DEVICE }}-ccache-" "ipq60xx-${{ env.DEVICE }}-staging-" "ipq60xx-${{ env.DEVICE }}-dl-"; do
-            gh actions-cache list --repo "${{ github.repository }}" --key "$prefix" --limit 100 --json id,key,createdAt --jq '.[1:] | .[].id' 2>/dev/null | while read -r id; do
+            gh actions-cache list --repo "${{ github.repository }}" --key "$prefix" --limit 100 --json id,key,createdAt --jq '.[1:] | .[].id' | while read -r id; do
               gh actions-cache delete "$id" --repo "${{ github.repository }}" --confirm 2>/dev/null || true
             done
           done
