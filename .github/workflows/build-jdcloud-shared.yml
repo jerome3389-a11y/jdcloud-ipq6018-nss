@@ -127,7 +127,12 @@ jobs:
       - name: Pin feeds
         run: |
           set -Eeuo pipefail
-          cp ../feeds.conf openwrt/feeds.conf
+          # Runs from the workspace root (no cd openwrt here), so the
+          # repo's feeds.conf is addressed WITHOUT a ../ prefix.
+          # (A ../feeds.conf here broke build #2: the parent of the
+          # workspace has no feeds.conf. CR880x does cd openwrt first
+          # and then cp ../feeds.conf feeds.conf — same file, other cwd.)
+          cp feeds.conf openwrt/feeds.conf
 
       - name: Compute ccache key
         id: ccache-key
@@ -216,8 +221,10 @@ jobs:
           # is needed. The step is kept so a future device that ISN'T
           # in-tree has a home (drop a .dts into repo dts/ and this
           # step copies it over the base tree's DTS).
-          if [ -d ../dts ]; then
-            cp ../dts/*.dts openwrt/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ 2>/dev/null || true
+          # Runs from the workspace root (no cd openwrt here), so the
+          # repo's dts/ dir is addressed WITHOUT a ../ prefix.
+          if [ -d dts ]; then
+            cp dts/*.dts openwrt/target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ 2>/dev/null || true
             echo "Custom DTS files installed" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No custom DTS (both devices are in-tree)" >> "$GITHUB_STEP_SUMMARY"
@@ -289,7 +296,12 @@ jobs:
       - name: Validate overlay shell scripts
         run: |
           set -Eeuo pipefail
-          for f in ../files/etc/uci-defaults/* ../scripts/*.sh; do
+          # Runs from the workspace root (no cd openwrt here), so the
+          # repo's files/ and scripts/ are addressed WITHOUT a ../
+          # prefix. (A ../ prefix here broke the check: the glob matched
+          # nothing and dash -n failed on the literal pattern.)
+          for f in files/etc/uci-defaults/* scripts/*.sh; do
+            [ -f "$f" ] || continue
             dash -n "$f" || { echo "::error::dash -n failed: $f" >&2; exit 1; }
           done
           echo "All overlay + DIY shell scripts pass dash -n" >> "$GITHUB_STEP_SUMMARY"
