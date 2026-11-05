@@ -374,7 +374,7 @@ jobs:
           cat artifact/sha256sums.txt
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: jdcloud-${{ env.SHORT }}-nss-${{ inputs.firmware }}
           path: artifact/
@@ -455,12 +455,14 @@ jobs:
           set -Eeuo pipefail
           # Keep only the newest cache per prefix (ccache / staging / dl).
           # Housekeeping must never fail the build (CR880x parity:
-          # continue-on-error) — and the list command keeps its stderr
-          # so a failure is visible in the log instead of silent.
-          gh extension install actions/gh-actions-cache --force 2>/dev/null || true
+          # continue-on-error).
+          # Uses the built-in `gh cache list` (CR880x form): the
+          # gh-actions-cache extension's `list` does NOT accept --json
+          # on this runner's gh version (build #3: "unknown flag:
+          # --json"), so the extension route was a no-op.
           for prefix in "ipq60xx-${{ env.DEVICE }}-ccache-" "ipq60xx-${{ env.DEVICE }}-staging-" "ipq60xx-${{ env.DEVICE }}-dl-"; do
-            gh actions-cache list --repo "${{ github.repository }}" --key "$prefix" --limit 100 --json id,key,createdAt --jq '.[1:] | .[].id' | while read -r id; do
-              gh actions-cache delete "$id" --repo "${{ github.repository }}" --confirm 2>/dev/null || true
+            gh cache list --key "$prefix" --json key,createdAt --jq 'sort_by(.createdAt) | reverse | .[1:] | .[].key' 2>/dev/null | while read -r key; do
+              [ -n "$key" ] && gh cache delete "$key" || true
             done
           done
         env:
