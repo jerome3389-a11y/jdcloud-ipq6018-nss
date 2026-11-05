@@ -51,6 +51,15 @@ permissions:
 
 env:
   TZ: Asia/Shanghai
+  # Silence git's "Using 'master' as the name for the initial branch"
+  # hint. actions/checkout runs `git init` before any step we control,
+  # so the setting must live here (workflow env), not in a run step.
+  # Git honours GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* / GIT_CONFIG_VALUE_*
+  # (git >= 2.31); verified locally that `git init` then prints only
+  # "Initialized empty Git repository" with no hint.
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
 
 jobs:
   build:
@@ -165,6 +174,25 @@ jobs:
           restore-keys: |
             ipq60xx-${{ env.DEVICE }}-dl-
 
+      # KNOWN-BENIGN WARNINGS (documented, not ignored — build #3 audit):
+      # `feeds install -a` + `make defconfig` emit Makefile dependency
+      # warnings for packages whose deps don't exist in the feed index.
+      # Verified benign (build #3: build succeeded, guard green, all
+      # selected packages present): the warning packages are NOT selected
+      # by our configs (openvswitch, jool, policycoreutils, pcat-manager,
+      # audit, lldpd, autocore, kexec-tools, arm-trusted-firmware-
+      # microchipsw), so they are never built. The three that touch used
+      # packages are optional/resolution artifacts: busybox -> libpam /
+      # libtirpc (optional applets, not needed), mac80211 -> kmod-qca-
+      # nss-drv (built fine via the nss feed; index-resolution artifact),
+      # default-settings -> luci (installed; artifact) and
+      # luci-i18n-base-zh-cn (Chinese translations, deliberately removed
+      # by the no-Chinese trim — expected). kmod-nf-conntrack6 (kernel
+      # 6.12 removed it; openvswitch/jool still declare it) is not
+      # referenced anywhere in this repo. These live in the upstream
+      # feed trees, not in this repo — do NOT patch feed Makefiles to
+      # silence them (fragile, unnecessary modification). If a future
+      # feed pin changes them, re-audit; do not chase them per-build.
       - name: Update and install feeds
         run: |
           set -Eeuo pipefail
