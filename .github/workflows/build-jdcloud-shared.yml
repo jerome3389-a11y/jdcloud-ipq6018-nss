@@ -8,9 +8,16 @@
 # Pipeline: clone pinned base -> pin feeds -> cache -> feeds
 # update/install -> DIY (q6_region + Argon + Athena LED) -> record
 # third-party sources -> apply device config + defconfig guard ->
-# validate overlays -> install files overlay -> download -> 3-stage
+# validate DIY scripts -> download -> 3-stage
 # build -> verify wireless + verify images -> stage artifacts ->
 # release (draft -> verify digests -> publish) -> housekeeping.
+#
+# NOTE: there is NO files overlay in this project on purpose
+# (user decision 2026-11-06: do not bake in router configuration,
+# keep the impact minimal). The firmware ships with the tree's
+# defaults; WiFi / DNS / password / theme are configured by the
+# user after flashing. The "Install files overlay" step was removed
+# with the overlay.
 #
 # NOTE: there is NO "disable mainland mirrors" step here on purpose.
 # The reference projects (jeojeo1225 fork, laipeng668 CI) build fine
@@ -162,7 +169,7 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: openwrt/staging_dir
-          key: ipq60xx-${{ env.DEVICE }}-staging-${{ hashFiles('feeds.conf', 'configs/*.config', 'scripts/**', 'files/**') }}
+          key: ipq60xx-${{ env.DEVICE }}-staging-${{ hashFiles('feeds.conf', 'configs/*.config', 'scripts/**') }}
           restore-keys: |
             ipq60xx-${{ env.DEVICE }}-staging-
 
@@ -323,29 +330,18 @@ jobs:
           # Keep the expanded config as build evidence.
           cp .config ../full.config
 
-      - name: Validate overlay shell scripts
+      - name: Validate DIY shell scripts
         run: |
           set -Eeuo pipefail
           # Runs from the workspace root (no cd openwrt here), so the
-          # repo's files/ and scripts/ are addressed WITHOUT a ../
-          # prefix. (A ../ prefix here broke the check: the glob matched
-          # nothing and dash -n failed on the literal pattern.)
-          for f in files/etc/uci-defaults/* scripts/*.sh; do
+          # repo's scripts/ are addressed WITHOUT a ../ prefix.
+          # (There is no files overlay to validate — see the header
+          # note; user decision 2026-11-06.)
+          for f in scripts/*.sh; do
             [ -f "$f" ] || continue
             dash -n "$f" || { echo "::error::dash -n failed: $f" >&2; exit 1; }
           done
-          echo "All overlay + DIY shell scripts pass dash -n" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install files overlay
-        run: |
-          set -Eeuo pipefail
-          cd openwrt
-          cp -a ../files/. files/
-          # Per-device overlay (static wireless) on top of the shared one.
-          cp -a "../files-${{ env.DEVICE }}/." files/
-          chmod +x files/etc/uci-defaults/* 2>/dev/null || true
-          chmod 0600 files/etc/shadow
-          echo "Overlay installed: shared files/ + files-${{ env.DEVICE }}/" >> "$GITHUB_STEP_SUMMARY"
+          echo "All DIY shell scripts pass dash -n" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download sources
         run: |
