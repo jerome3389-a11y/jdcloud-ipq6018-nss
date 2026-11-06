@@ -6,21 +6,34 @@
 #   1. q6_region 64 MB for RE-SS-01 (user decision 2026-11-05).
 #   2. Fetch Argon theme + argon-config (latest master, like the
 #      CR880x project; recorded in third-party-sources.txt).
-#   3. Fetch the Athena LED app (PINNED commit, RE-CS-02 only in
-#      effect — the source is fetched for every build, but only the
-#      re-cs-02 config selects the package).
-#   4. Fetch HomeProxy (latest master) after removing the feed's
-#      copy of luci-app-homeproxy (fork-only feature, user decision
-#      2026-11-05; recorded in third-party-sources.txt).
-#   5. Fork sysctl tunings (min_free_kbytes / swappiness /
+#   3. Fetch the Athena LED app (latest master — user decision
+#      2026-11-06: all plugins/software use the latest version on
+#      every build; recorded in third-party-sources.txt).
+#   4. sing-box latest release (user decision 2026-11-06): the
+#      pinned packages feed lags (1.12.25), so resolve the latest
+#      SagerNet release on every build and rewrite the feed
+#      package's PKG_VERSION + PKG_HASH in place; recorded in
+#      third-party-sources.txt via SINGBOX_VERSION.
+#   5. Fetch PassWall (latest master) after removing the feed's
+#      copy of luci-app-passwall (user decision 2026-11-06: try
+#      PassWall; it REPLACES HomeProxy — both manage sing-box and
+#      would conflict; recorded in third-party-sources.txt).
+#   6. Fork sysctl tunings (min_free_kbytes / swappiness /
 #      netdev_max_backlog / printk) on the tree's sysctl.conf.
-#   6. Fork rc.local additions (LRU_GEN enable + noatime remount).
+#   7. Fork rc.local additions (LRU_GEN enable + noatime remount).
+#
+# Standing rule (user decision 2026-11-06): ALL plugins and
+# software use the LATEST version on every build, automatically.
+# That is why Argon, Athena LED, PassWall and sing-box are all
+# fetched at their latest on every build (master / latest release),
+# never a pinned commit. The base tree and the feeds stay PINNED
+# (reproducible core); only the plugins/software float to latest.
 #
 # What it deliberately does NOT do (fork features left out — see the
 # parity table and the notes at the end of this script): no LAN IP /
 # hostname change (firmware defaults stay 192.168.1.1 / OpenWrt),
 # no LuCI "Built by" injection, no log/cpufreq forcing (the target
-# files do not exist in the pinned tree — see §7), no CPU voltage
+# files do not exist in the pinned tree — see §8), no CPU voltage
 # change, no GCC 13 pin, no MULTI_PROFILE, no sbwml golang fetch
 # (the pinned feed's Go 1.26 already satisfies sing-box — see §4).
 #
@@ -135,40 +148,106 @@ rm -rf package/luci-theme-argon package/luci-app-argon-config
 fetch_source https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon Makefile master ARGON_THEME_COMMIT
 fetch_source https://github.com/jerrykuku/luci-app-argon-config package/luci-app-argon-config Makefile master ARGON_CONFIG_COMMIT
 
-# --- 3. Athena LED app (PINNED — RE-CS-02 only in effect) ---
+# --- 3. Athena LED app (latest master — RE-CS-02 only in effect) ---
 # Fetched for every build (source only); only the re-cs-02 config
 # selects luci-app-athena-led + its zh-cn translation, so the
-# RE-SS-01 image never contains it. Pinned because the repo is small
-# and stable (HEAD 2025-02-14); a drift fails the build (see
-# fetch_source's pinned check). Installed into package/ (not a feed).
+# RE-SS-01 image never contains it. Latest master per the user's
+# 2026-11-06 standing rule (all plugins/software use the latest
+# version on every build); the resolved commit is recorded in
+# third-party-sources.txt. Installed into package/ (not a feed).
 # The fork's chmod +x of the init script and helper is kept.
-ATHENA_LED_PIN="f8eeb3119008ac0e429fc642c125512f9253ec1b"
-fetch_source https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led Makefile main ATHENA_LED_COMMIT "$ATHENA_LED_PIN"
+fetch_source https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led Makefile main ATHENA_LED_COMMIT
 chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app-athena-led/root/usr/sbin/athena-led
 
-# --- 4. HomeProxy (fork-only feature, user decision 2026-11-05) ---
-# The luci feed DOES contain luci-app-homeproxy at the pinned commit,
-# so remove it first — otherwise package/homeproxy would define the
-# same package twice and the build fails (this is the fork's own
-# rm -rf step, same reason). Then fetch the upstream app into
-# package/ (latest master, like Argon; the resolved commit is
-# recorded in third-party-sources.txt by the workflow).
-# The app's own default config ships with main_node 'nil' and
-# lan_proxy_mode 'disabled' — installed but unconfigured; the user
-# adds a node in LuCI to enable it.
-# sing-box itself comes from the pinned packages feed (net/sing-box,
-# full variant v1.12.25); NO golang fetch is done here: the pinned
-# feed's Go default is 1.26 and sing-box 1.12.25's go.mod requires
-# go 1.23.1, so the feed toolchain already satisfies it. The fork's
-# sbwml golang 27.x fetch was needed when the feed's Go was older;
-# replicating it now would replace the feed's whole lang/golang dir
-# (including golang-bootstrap) with an unpinned external for no
-# benefit. If a future sing-box bump raises the Go requirement past
-# the feed default, re-add the sbwml fetch then — and pin it.
-rm -rf feeds/luci/applications/luci-app-homeproxy
-fetch_source https://github.com/immortalwrt/homeproxy package/homeproxy Makefile master HOMEPROXY_COMMIT
+# --- 4. sing-box latest release (user decision 2026-11-06) ---
+# sing-box comes from the pinned packages feed (net/sing-box), whose
+# version lags (1.12.25 at the pinned feed commit; the feed tip is
+# still 1.12.25, so a feed-pin bump does NOT help). The user ordered
+# all plugins/software to use the latest version on every build, so
+# this step resolves the latest SagerNet release on every build (via
+# the /releases/latest redirect — a plain web request, no API and no
+# rate limit) and rewrites the feed package's PKG_VERSION + PKG_HASH
+# in place. The build then downloads that exact tarball via the
+# package's own PKG_SOURCE_URL and verifies it against the new hash.
+# The feed's Go (1.26/1.27 available) satisfies sing-box 1.14.4's
+# go.mod requirement (go 1.25.5), so no golang fetch is needed.
+# Fails loudly if the latest version cannot be resolved, the tarball
+# cannot be downloaded/hashed, or the Makefile update does not take
+# effect. The resolved version is recorded in third-party-sources.txt
+# via SINGBOX_VERSION.
+SINGBOX_MAKEFILE="feeds/packages/net/sing-box/Makefile"
+if [ ! -f "$SINGBOX_MAKEFILE" ]; then
+    printf 'Required file not found: %s\n' "$SINGBOX_MAKEFILE" >&2
+    exit 1
+fi
+SINGBOX_LATEST_URL="$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/SagerNet/sing-box/releases/latest)"
+SINGBOX_VERSION="${SINGBOX_LATEST_URL##*/v}"
+if [ -z "$SINGBOX_VERSION" ] || [ "$SINGBOX_VERSION" = "$SINGBOX_LATEST_URL" ]; then
+    printf 'Failed to resolve latest sing-box release from %s\n' "$SINGBOX_LATEST_URL" >&2
+    exit 1
+fi
+SINGBOX_TARBALL="$(mktemp)"
+if ! curl -fsSL -o "$SINGBOX_TARBALL" "https://codeload.github.com/SagerNet/sing-box/tar.gz/v${SINGBOX_VERSION}"; then
+    printf 'Failed to download sing-box %s tarball\n' "$SINGBOX_VERSION" >&2
+    rm -f "$SINGBOX_TARBALL"
+    exit 1
+fi
+SINGBOX_HASH="$(sha256sum "$SINGBOX_TARBALL" | awk '{print $1}')"
+rm -f "$SINGBOX_TARBALL"
+if [ -z "$SINGBOX_HASH" ]; then
+    printf 'Failed to hash sing-box %s tarball\n' "$SINGBOX_VERSION" >&2
+    exit 1
+fi
+if ! grep -Eq '^PKG_VERSION:=' "$SINGBOX_MAKEFILE"; then
+    printf 'PKG_VERSION line not found in %s\n' "$SINGBOX_MAKEFILE" >&2
+    exit 1
+fi
+if ! grep -Eq '^PKG_HASH:=' "$SINGBOX_MAKEFILE"; then
+    printf 'PKG_HASH line not found in %s\n' "$SINGBOX_MAKEFILE" >&2
+    exit 1
+fi
+sed -i -E "s/^PKG_VERSION:=.*/PKG_VERSION:=${SINGBOX_VERSION}/" "$SINGBOX_MAKEFILE"
+sed -i -E "s/^PKG_HASH:=.*/PKG_HASH:=${SINGBOX_HASH}/" "$SINGBOX_MAKEFILE"
+if ! grep -Fq "PKG_VERSION:=${SINGBOX_VERSION}" "$SINGBOX_MAKEFILE"; then
+    printf 'sing-box PKG_VERSION update did not take effect in %s\n' "$SINGBOX_MAKEFILE" >&2
+    exit 1
+fi
+if ! grep -Fq "PKG_HASH:=${SINGBOX_HASH}" "$SINGBOX_MAKEFILE"; then
+    printf 'sing-box PKG_HASH update did not take effect in %s\n' "$SINGBOX_MAKEFILE" >&2
+    exit 1
+fi
+printf 'sing-box latest: %s (sha256 %s)\n' "$SINGBOX_VERSION" "$SINGBOX_HASH"
+printf 'SINGBOX_VERSION=%s\n' "$SINGBOX_VERSION" >> "$GITHUB_ENV"
 
-# --- 5. Fork sysctl tunings (fail loudly if the target is absent) ---
+# --- 5. PassWall (user decision 2026-11-06: "Passwall试试") ---
+# Replaces HomeProxy (removed by the same decision). HomeProxy is a
+# light sing-box-only manager; PassWall is the community-standard
+# multi-protocol manager (sing-box / Xray / V2Ray / Trojan /
+# Shadowsocks, subscriptions, load balancing, ACL rules). Both
+# manage sing-box, so they CONFLICT — only one is installed.
+# PassWall is fetched at latest master on every build (standing rule
+# 2026-11-06), from the Openwrt-Passwall org — the project moved
+# from xiaorouji in 2026 (the old xiaorouji/openwrt-passwall URL
+# 404s). The repo is a feed whose luci-app-passwall lives in a
+# subdirectory, so fetch_source clones it to a temp dir and the
+# subdir is copied into package/ (the feed's copy is removed first,
+# otherwise the package would be defined twice and the build fails).
+# The config enables INCLUDE_SingBox so PassWall uses the sing-box
+# core (updated to latest by §4 above). The feed's Go (1.26/1.27)
+# satisfies sing-box 1.14.4's go.mod requirement (go 1.25.5), so no
+# golang fetch is needed. Installed but unconfigured by default;
+# the user adds a node in LuCI to enable it.
+rm -rf feeds/luci/applications/luci-app-passwall
+rm -rf package/luci-app-passwall
+fetch_source https://github.com/Openwrt-Passwall/openwrt-passwall package/.passwall-upstream luci-app-passwall/Makefile main PASSWALL_COMMIT
+cp -r package/.passwall-upstream/luci-app-passwall package/luci-app-passwall
+rm -rf package/.passwall-upstream
+if [ ! -f "package/luci-app-passwall/Makefile" ]; then
+    printf 'PassWall copy failed: package/luci-app-passwall/Makefile missing\n' >&2
+    exit 1
+fi
+
+# --- 6. Fork sysctl tunings (fail loudly if the target is absent) ---
 # Copied from the fork's set_sysctl (awk rewrite that drops any
 # existing line for the key, then appends key=value). The target
 # package/base-files/files/etc/sysctl.conf EXISTS in the pinned tree
@@ -202,7 +281,7 @@ set_sysctl vm.swappiness 10
 set_sysctl net.core.netdev_max_backlog 10000
 set_sysctl kernel.printk '0 0 0 0'
 
-# --- 6. Fork rc.local additions (fail loudly if the target is absent) ---
+# --- 7. Fork rc.local additions (fail loudly if the target is absent) ---
 # Copied from the fork's ensure_rc_command: each command is inserted
 # before 'exit 0' exactly once (idempotent on re-runs). The target
 # package/base-files/files/etc/rc.local EXISTS in the pinned tree
@@ -234,7 +313,7 @@ ensure_rc_command() {
 ensure_rc_command 'echo 7 > /sys/kernel/mm/lru_gen/enabled'
 ensure_rc_command 'mount -o remount,noatime,nodiratime /'
 
-# --- 7. Fork tunings NOT applied (targets absent in the pinned tree) ---
+# --- 8. Fork tunings NOT applied (targets absent in the pinned tree) ---
 # Log settings (circular, size 64) and the cpufreq performance
 # governor are SKIPPED, not silently skipped: the fork's steps guard
 # them with `if [ -f ... ]` and print "Skipping…" when the file is

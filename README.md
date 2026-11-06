@@ -55,7 +55,7 @@ NSS 栈来自基础树的 qualcommax 默认包（不是本项目额外加的）�
 | 802.11r（FT） | 支持 | 默认关闭 | — |
 | 802.11s（MESH） | 不支持 NSS 卸载（固件 12.5，见下文） | 默认关闭 | — |
 | SQM（NSS nssfq_codel） | 支持 | 默认关闭 | — |
-| HomeProxy + sing-box | 支持 | 默认未配置（无节点，须在 LuCI 里添加节点后启用；sing-box 服务默认关闭） | 未测试 |
+| PassWall + sing-box | 支持 | 默认未配置（无节点，须在 LuCI 里添加节点后启用；sing-box 服务默认关闭） | 未测试 |
 | TTYD 网页终端 | 支持 | 已安装（在 LuCI 里打开） | — |
 | SFTP 服务端 | 支持 | 随 SSH 提供 | — |
 | ARP 绑定 / USB 打印机 | 支持 | 已安装（在 LuCI 里配置） | — |
@@ -114,6 +114,8 @@ NSS 栈来自基础树的 qualcommax 默认包（不是本项目额外加的）�
 ## 给 fork 者的建议与注意事项
 
 - 基础树和 feeds 全部 pinned：改 `feeds.conf` 或 `base_ref` 前请确认新 commit 的 NSS 栈没有回归。
+- 插件和软件每次构建自动用最新版（2026-11-06 起的规则）：sing-box（DIY 从 SagerNet 最新 release 取）、PassWall、Argon、Athena LED（都从 master 取）每次构建都拉最新；基础树和 feeds 保持 pinned，只有插件/软件浮动到最新版。
+- LuCI 语言是英文（`# CONFIG_LUCI_LANG_zh_Hans is not set`）：英文是 LuCI 的源语言、没有可选项，LiBwrt 树默认中文；配置里必须明确取消中文，否则 `make defconfig` 会把中文语言包重新加回来。
 - NSS 固件版本是单选：12.5 和 12.2 只能选一个；12.5 不支持 NSS MESH。
 - q6_region 不要低于 54 MB（WiFi 会起不来）；RE-SS-01 用 64 MB，RE-CS-02 不走这条 DTS，不要动。
 - RE-CS-02 的无线配置（PCIe 路径、HE160）是从 DTS 推导的，未上机验证；Athena 上 WiFi 不起来时先删静态无线文件，让系统自动检测生成配置，再从 `/etc/board.json` 查真实路径。

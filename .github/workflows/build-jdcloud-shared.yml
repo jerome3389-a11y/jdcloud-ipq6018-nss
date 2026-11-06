@@ -226,19 +226,21 @@ jobs:
           set -Eeuo pipefail
           cd openwrt
           # Ledger of every third-party source fetched by the DIY script
-          # (Argon and HomeProxy are unpinned master; Athena LED is
-          # pinned — the file goes into the workflow artifact with the
-          # build evidence). This MUST be a separate step from the DIY
-          # step: diy.sh records the resolved commits via $GITHUB_ENV,
-          # which only becomes visible to LATER steps — reading them in
-          # the same step fails with "unbound variable" under set -u.
+          # (Argon, Athena LED and HomeProxy are unpinned master;
+          # sing-box is the latest SagerNet release — the file goes
+          # into the workflow artifact with the build evidence). This
+          # MUST be a separate step from the DIY step: diy.sh records
+          # the resolved commits via $GITHUB_ENV, which only becomes
+          # visible to LATER steps — reading them in the same step
+          # fails with "unbound variable" under set -u.
           # Do not merge this back into the DIY step.
           {
             echo "LiBwrt/LibWrt 25.12-nss @ ${BASE_COMMIT}"
             echo "luci-theme-argon master @ ${ARGON_THEME_COMMIT}"
             echo "luci-app-argon-config master @ ${ARGON_CONFIG_COMMIT}"
-            echo "luci-app-athena-led main @ ${ATHENA_LED_COMMIT} (pinned f8eeb3119008ac0e429fc642c125512f9253ec1b)"
-            echo "luci-app-homeproxy master @ ${HOMEPROXY_COMMIT}"
+            echo "luci-app-athena-led main @ ${ATHENA_LED_COMMIT}"
+            echo "luci-app-passwall main @ ${PASSWALL_COMMIT}"
+            echo "sing-box latest release @ ${SINGBOX_VERSION}"
           } > third-party-sources.txt
 
       - name: Install custom devices
@@ -300,11 +302,11 @@ jobs:
                      NSS_DRV_WIFIOFFLOAD_ENABLE PACKAGE_MAC80211_NSS_SUPPORT; do
             grep -q "^CONFIG_${sym}=y$" .config || { echo "::error::NSS DEFAULT MISSING: $sym"; missing=1; }
           done
-          # --- Fork-features check: HomeProxy/sing-box + apps + tools ---
+          # --- Fork-features check: PassWall/sing-box + apps + tools ---
           # (These are also covered by the fragment-survival loop above
           # — this named list makes a fork-feature drop report itself
           # instead of hiding inside a generic CONFIG DROPPED line.)
-          for sym in luci-app-homeproxy ca-certificates sing-box \
+          for sym in luci-app-passwall luci-app-passwall_INCLUDE_SingBox ca-certificates sing-box \
                      kmod-tun kmod-inet-diag kmod-nft-tproxy kmod-nft-socket ip-full libcap-bin \
                      luci-app-ttyd openssh-sftp-server luci-app-arpbind \
                      luci-app-usb-printer; do
