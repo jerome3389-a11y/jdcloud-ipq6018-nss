@@ -12,7 +12,7 @@ JDCloud AX1800（RE-SS-01 / RE-CS-02）的 OpenWrt 自动编译项目：最强�
 | 内核 | 6.12（6.12.112） |
 | NSS 固件 | 12.5（12.5-210-MP；可选 12.2） |
 | 目标平台 | qualcommax / ipq60xx（DSA） |
-| LuCI | Argon 默认主题 |
+| LuCI | Argon 已安装（LuCI 默认主题为 Bootstrap，可在 LuCI 里切换） |
 
 | Feed | 分支 | Pinned commit |
 | --- | --- | --- |
@@ -49,9 +49,9 @@ NSS 栈来自基础树的 qualcommax 默认包（不是本项目额外加的）�
 | 特性 | 支持 | 默认状态 | 实机测试 |
 | --- | --- | --- | --- |
 | NSS 加速 | 支持 | 默认启用 | 未测试 |
-| 双频 WiFi | 支持 | 默认启用 | 未测试 |
-| 802.11k（RRM） | 支持 | 默认启用 | 未测试 |
-| 802.11v（WNM Sleep + BSS Transition） | 支持 | 默认启用 | 未测试 |
+| 双频 WiFi | 支持 | 默认未配置（刷机后在 LuCI 里开启并设置 SSID/密码） | 未测试 |
+| 802.11k（RRM） | 支持 | 默认关闭（须在无线配置里开启） | 未测试 |
+| 802.11v（WNM Sleep + BSS Transition） | 支持 | 默认关闭（须在无线配置里开启） | 未测试 |
 | 802.11r（FT） | 支持 | 默认关闭 | — |
 | 802.11s（MESH） | 不支持 NSS 卸载（固件 12.5，见下文） | 默认关闭 | — |
 | SQM（NSS nssfq_codel） | 支持 | 默认关闭 | — |
@@ -59,25 +59,27 @@ NSS 栈来自基础树的 qualcommax 默认包（不是本项目额外加的）�
 | TTYD 网页终端 | 支持 | 已安装（在 LuCI 里打开） | — |
 | SFTP 服务端 | 支持 | 随 SSH 提供 | — |
 | ARP 绑定 / USB 打印机 | 支持 | 已安装（在 LuCI 里配置） | — |
-| Adblock | 支持 | 默认启用 | 未测试 |
+| Adblock | 支持 | 默认关闭（已安装，在 LuCI 里开启） | 未测试 |
 | UPnP | 支持 | 默认关闭 | — |
 | 内核流量分载 | 支持 | 默认关闭（必须关，ECM 才是分载路径） | — |
 | IGMP snooping | 支持 | 默认关闭 | — |
 | zram-swap | 支持 | 默认启用 | 未测试 |
 | 5G 160 MHz | RE-SS-01 不支持（硬件上限 80 MHz）；RE-CS-02 支持（QCN9074） | — | 未测试 |
 
-## 出厂默认凭证
+## 固件默认状态（无固化配置）
 
-| 项目 | 默认值 |
+**本项目不固化任何路由器配置**（2026-11-06 起的决定：将改动影响降到最小）。固件刷出来就是基础树的默认状态，WiFi、DNS、密码、主题一律由用户在刷机后自行配置：
+
+| 项目 | 状态 |
 | --- | --- |
-| WiFi 2.4G SSID | OpenWrt |
-| WiFi 5G SSID | OpenWrt_5G |
-| WiFi 密码 | 12345678（WPA2） |
-| Root 密码 | password |
-| LAN IP | 192.168.1.1（固件默认） |
-| 主机名 | OpenWrt（固件默认） |
+| WiFi SSID / 密码 | 未配置（刷机后在 LuCI 里开启并设置） |
+| Root 密码 | 未设置（首次登录时设置；OpenWrt 默认行为） |
+| LAN IP | 192.168.1.1（基础树默认） |
+| 主机名 | LibWrt（基础树默认） |
+| DNS（dnsmasq） | 基础树默认（缓存 150 条；无监听接口 / 缓存记录类型定制） |
+| LuCI 主题 | Bootstrap（基础树默认）；Argon 已安装，可在 LuCI 里切换 |
 
-> 这些是公开的出厂默认值，刷机后请立即修改 Root 密码和 WiFi 密码。
+> 刷机后请先设置 Root 密码，再配置 WiFi。
 
 ## 支持的型号
 
@@ -94,8 +96,8 @@ NSS 栈来自基础树的 qualcommax 默认包（不是本项目额外加的）�
 - **升级（已有 OpenWrt/ImmortalWrt 在运行）**：用 `sysupgrade.bin`，LuCI（系统 → 备份/升级）或命令行 `sysupgrade` 刷入。升级保留配置可选（建议首次升级不保留，从干净状态开始）。
 - **首次安装**：用 `factory.bin`（FIT 镜像），走设备的原厂 web 升级或 U-Boot 恢复刷入（与参考项目 fork 固件同一路子）。**首次安装的具体步骤尚未实测确认**——第一台设备刷机前请先在实机上确认入口，确认后补到这里。
 - **恢复**：构建产物包含 `initramfs` 镜像（workflow artifact 里），可用于 TFTP 启动恢复（未实测）。
-- **首次开机**：双频 WiFi 默认开启，SSID/密码见上表；5G 启动可能较慢（自动信道扫描 + DFS 检测，最长约 10 分钟），属正常现象，不是故障。
-- **DNS**：默认 dnsmasq 缓存 1000 条，监听 lan 接口，缓存 ANY/A/AAAA 记录类型（与 CR880x 项目相同的默认值）。
+- **首次开机**：WiFi 默认未配置，在 LuCI（网络 → 无线）里开启并设置 SSID/密码；5G 启动可能较慢（自动信道扫描 + DFS 检测，最长约 10 分钟），属正常现象，不是故障。
+- **DNS**：dnsmasq 用基础树默认配置（无缓存大小 / 监听接口 / 缓存记录类型定制）。
 
 ## 编译
 
@@ -118,8 +120,7 @@ NSS 栈来自基础树的 qualcommax 默认包（不是本项目额外加的）�
 - LuCI 语言是英文（`# CONFIG_LUCI_LANG_zh_Hans is not set`）：英文是 LuCI 的源语言、没有可选项，LiBwrt 树默认中文；配置里必须明确取消中文，否则 `make defconfig` 会把中文语言包重新加回来。
 - NSS 固件版本是单选：12.5 和 12.2 只能选一个；12.5 不支持 NSS MESH。
 - q6_region 不要低于 54 MB（WiFi 会起不来）；RE-SS-01 用 64 MB，RE-CS-02 不走这条 DTS，不要动。
-- RE-CS-02 的无线配置（PCIe 路径、HE160）是从 DTS 推导的，未上机验证；Athena 上 WiFi 不起来时先删静态无线文件，让系统自动检测生成配置，再从 `/etc/board.json` 查真实路径。
-- 不要把本项目的 `files/` 静态无线直接搬到别的 IPQ6018 设备上：IPQ6018 只有一个 wifi 节点（`wifi@c000000`），两频共用一条 path，靠 `option radio` 区分——和 IPQ50xx 的双节点结构不一样。
+- RE-CS-02 的无线配置（PCIe 路径、HE160）是从 DTS 推导的，未上机验证；Athena 上 WiFi 不起来时从 `/etc/board.json` 查真实路径（系统首次启动自动检测生成无线配置）。
 
 ## 合规
 
