@@ -341,12 +341,21 @@ jobs:
         run: |
           set -Eeuo pipefail
           cd openwrt
-          cp -a ../files/. files/
-          # Per-device overlay (static wireless) on top of the shared one.
-          cp -a "../files-${{ env.DEVICE }}/." files/
-          chmod +x files/etc/uci-defaults/* 2>/dev/null || true
-          chmod 0600 files/etc/shadow
-          echo "Overlay installed: shared files/ + files-${{ env.DEVICE }}/" >> "$GITHUB_STEP_SUMMARY"
+          # Anything in this repo's files/ is baked into the image rootfs.
+          # uci-defaults scripts must be executable in the image, and the
+          # snapshot push stores them as 0644, so chmod them here.
+          # (Restored 2026-11-08: f0b19fe8 regressed this step to an unguarded
+          # copy of a per-device overlay dir that does not exist. JDCloud has
+          # no per-device overlay since static wireless was removed.)
+          if [ -d ../files ]; then
+            mkdir -p files
+            cp -r ../files/. files/
+            chmod +x files/etc/uci-defaults/* 2>/dev/null || true
+            # /etc/shadow must not be world-readable in the image.
+            chmod 0600 files/etc/shadow 2>/dev/null || true
+          fi
+          echo "=== FILES OVERLAY ==="
+          find files -type f 2>/dev/null | head -50
 
       - name: Download sources
         run: |
