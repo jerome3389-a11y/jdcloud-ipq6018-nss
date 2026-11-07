@@ -12,12 +12,12 @@
 # build -> verify wireless + verify images -> stage artifacts ->
 # release (draft -> verify digests -> publish) -> housekeeping.
 #
-# NOTE: there is NO files overlay in this project on purpose
-# (user decision 2026-11-06: do not bake in router configuration,
-# keep the impact minimal). The firmware ships with the tree's
-# defaults; WiFi / DNS / password / theme are configured by the
-# user after flashing. The "Install files overlay" step was removed
-# with the overlay.
+# NOTE: the files overlay holds ONLY the five kept presets
+# (user decision 2026-11-07, synced with the CR880x project):
+# BBR, Argon theme, qca-nss-drv enable, Adblock preset, root
+# password. No DNS hijack, no dnsmasq tuning, no static wireless,
+# no other baked-in router configuration. WiFi / DNS are configured
+# by the user after flashing.
 #
 # NOTE: there is NO "disable mainland mirrors" step here on purpose.
 # The reference projects (jeojeo1225 fork, laipeng668 CI) build fine
@@ -169,7 +169,7 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: openwrt/staging_dir
-          key: ipq60xx-${{ env.DEVICE }}-staging-${{ hashFiles('feeds.conf', 'configs/*.config', 'scripts/**') }}
+          key: ipq60xx-${{ env.DEVICE }}-staging-${{ hashFiles('feeds.conf', 'configs/*.config', 'scripts/**', 'files/**') }}
           restore-keys: |
             ipq60xx-${{ env.DEVICE }}-staging-
 
@@ -267,6 +267,23 @@ jobs:
             echo "No custom DTS (both devices are in-tree)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Install files overlay
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          # Anything in this repo's files/ is baked into the image rootfs.
+          # uci-defaults scripts must be executable in the image, and the
+          # snapshot push stores them as 0644, so chmod them here.
+          if [ -d ../files ]; then
+            mkdir -p files
+            cp -r ../files/. files/
+            chmod +x files/etc/uci-defaults/* 2>/dev/null || true
+            # /etc/shadow must not be world-readable in the image.
+            chmod 0600 files/etc/shadow 2>/dev/null || true
+          fi
+          echo "=== FILES OVERLAY ==="
+          find files -type f 2>/dev/null | head -50
+
       - name: Apply device config
         run: |
           set -Eeuo pipefail
@@ -335,13 +352,18 @@ jobs:
           set -Eeuo pipefail
           # Runs from the workspace root (no cd openwrt here), so the
           # repo's scripts/ are addressed WITHOUT a ../ prefix.
-          # (There is no files overlay to validate — see the header
-          # note; user decision 2026-11-06.)
           for f in scripts/*.sh; do
             [ -f "$f" ] || continue
             dash -n "$f" || { echo "::error::dash -n failed: $f" >&2; exit 1; }
           done
-          echo "All DIY shell scripts pass dash -n" >> "$GITHUB_STEP_SUMMARY"
+          # Overlay script syntax check: a syntax error in an overlay
+          # script currently surfaces only after a full build + flash.
+          # Fail fast here, before the long build.
+          for f in files/etc/uci-defaults/*; do
+            [ -f "$f" ] || continue
+            dash -n "$f" || { echo "::error::dash -n failed: $f" >&2; exit 1; }
+          done
+          echo "All DIY + overlay shell scripts pass dash -n" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download sources
         run: |

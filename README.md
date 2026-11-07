@@ -66,20 +66,23 @@ NSS 栈来自基础树的 qualcommax 默认包（不是本项目额外加的）�
 | zram-swap | 支持 | 默认启用 | 未测试 |
 | 5G 160 MHz | RE-SS-01 不支持（硬件上限 80 MHz）；RE-CS-02 支持（QCN9074） | — | 未测试 |
 
-## 固件默认状态（无固化配置）
+## 固件默认状态（仅保留 5 项预设置）
 
-**本项目不固化任何路由器配置**（2026-11-06 起的决定：将改动影响降到最小）。固件刷出来就是基础树的默认状态，WiFi、DNS、密码、主题一律由用户在刷机后自行配置：
+**本项目只保留 5 项预设置**（2026-11-07 起的决定，与 CR880x 项目同步：Argon、 BBR、qca-nss-drv、Adblock、Root 密码）。其余一律不固化：无 DNS 劫持、无 dnsmasq 定制、无静态无线。WiFi、DNS 由用户在刷机后自行配置：
 
 | 项目 | 状态 |
 | --- | --- |
 | WiFi SSID / 密码 | 未配置（刷机后在 LuCI 里开启并设置） |
-| Root 密码 | 未设置（首次登录时设置；OpenWrt 默认行为） |
+| Root 密码 | 已预设为 `password`（刷机后请立即修改） |
 | LAN IP | 192.168.1.1（基础树默认） |
 | 主机名 | LibWrt（基础树默认） |
 | DNS（dnsmasq） | 基础树默认（缓存 150 条；无监听接口 / 缓存记录类型定制） |
-| LuCI 主题 | Bootstrap（基础树默认）；Argon 已安装，可在 LuCI 里切换 |
+| LuCI 主题 | Argon（预设为默认主题）；Bootstrap 仍可切换 |
+| 拥塞控制 | BBR（预设） |
+| NSS 驱动优化 | qca-nss-drv 默认启用（IRQ 亲和 + RPS） |
+| Adblock | 默认启用（anti_ad / adguard / yoyo / disconnect，列表首次启动联网下载） |
 
-> 刷机后请先设置 Root 密码，再配置 WiFi。
+> 刷机后请先修改 Root 密码，再配置 WiFi。
 
 ## 支持的型号
 
