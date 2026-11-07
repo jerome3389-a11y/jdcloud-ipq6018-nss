@@ -8,16 +8,9 @@
 # Pipeline: clone pinned base -> pin feeds -> cache -> feeds
 # update/install -> DIY (q6_region + Argon + Athena LED) -> record
 # third-party sources -> apply device config + defconfig guard ->
-# validate DIY scripts -> download -> 3-stage
+# validate overlays -> install files overlay -> download -> 3-stage
 # build -> verify wireless + verify images -> stage artifacts ->
 # release (draft -> verify digests -> publish) -> housekeeping.
-#
-# NOTE: the files overlay holds ONLY the five kept presets
-# (user decision 2026-11-07, synced with the CR880x project):
-# BBR, Argon theme, qca-nss-drv enable, Adblock preset, root
-# password. No DNS hijack, no dnsmasq tuning, no static wireless,
-# no other baked-in router configuration. WiFi / DNS are configured
-# by the user after flashing.
 #
 # NOTE: there is NO "disable mainland mirrors" step here on purpose.
 # The reference projects (jeojeo1225 fork, laipeng668 CI) build fine
@@ -246,7 +239,6 @@ jobs:
             echo "luci-theme-argon master @ ${ARGON_THEME_COMMIT}"
             echo "luci-app-argon-config master @ ${ARGON_CONFIG_COMMIT}"
             echo "luci-app-athena-led main @ ${ATHENA_LED_COMMIT}"
-            echo "luci-app-passwall main @ ${PASSWALL_COMMIT}"
             echo "sing-box latest release @ ${SINGBOX_VERSION}"
           } > third-party-sources.txt
 
@@ -266,23 +258,6 @@ jobs:
           else
             echo "No custom DTS (both devices are in-tree)" >> "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Install files overlay
-        run: |
-          set -Eeuo pipefail
-          cd openwrt
-          # Anything in this repo's files/ is baked into the image rootfs.
-          # uci-defaults scripts must be executable in the image, and the
-          # snapshot push stores them as 0644, so chmod them here.
-          if [ -d ../files ]; then
-            mkdir -p files
-            cp -r ../files/. files/
-            chmod +x files/etc/uci-defaults/* 2>/dev/null || true
-            # /etc/shadow must not be world-readable in the image.
-            chmod 0600 files/etc/shadow 2>/dev/null || true
-          fi
-          echo "=== FILES OVERLAY ==="
-          find files -type f 2>/dev/null | head -50
 
       - name: Apply device config
         run: |
@@ -326,11 +301,13 @@ jobs:
                      NSS_DRV_WIFIOFFLOAD_ENABLE PACKAGE_MAC80211_NSS_SUPPORT; do
             grep -q "^CONFIG_${sym}=y$" .config || { echo "::error::NSS DEFAULT MISSING: $sym"; missing=1; }
           done
-          # --- Fork-features check: PassWall/sing-box + apps + tools ---
+          # --- Fork-features check: sing-box + apps + tools ---
           # (These are also covered by the fragment-survival loop above
           # — this named list makes a fork-feature drop report itself
           # instead of hiding inside a generic CONFIG DROPPED line.)
-          for sym in luci-app-passwall luci-app-passwall_INCLUDE_SingBox ca-certificates sing-box \
+          # PassWall was removed 2026-11-08 (user decision); sing-box
+          # is run directly from the command line, no LuCI manager.
+          for sym in ca-certificates sing-box \
                      kmod-tun kmod-inet-diag kmod-nft-tproxy kmod-nft-socket ip-full libcap-bin \
                      luci-app-ttyd openssh-sftp-server luci-app-arpbind \
                      luci-app-usb-printer; do
@@ -347,23 +324,29 @@ jobs:
           # Keep the expanded config as build evidence.
           cp .config ../full.config
 
-      - name: Validate DIY shell scripts
+      - name: Validate overlay shell scripts
         run: |
           set -Eeuo pipefail
           # Runs from the workspace root (no cd openwrt here), so the
-          # repo's scripts/ are addressed WITHOUT a ../ prefix.
-          for f in scripts/*.sh; do
+          # repo's files/ and scripts/ are addressed WITHOUT a ../
+          # prefix. (A ../ prefix here broke the check: the glob matched
+          # nothing and dash -n failed on the literal pattern.)
+          for f in files/etc/uci-defaults/* scripts/*.sh; do
             [ -f "$f" ] || continue
             dash -n "$f" || { echo "::error::dash -n failed: $f" >&2; exit 1; }
           done
-          # Overlay script syntax check: a syntax error in an overlay
-          # script currently surfaces only after a full build + flash.
-          # Fail fast here, before the long build.
-          for f in files/etc/uci-defaults/*; do
-            [ -f "$f" ] || continue
-            dash -n "$f" || { echo "::error::dash -n failed: $f" >&2; exit 1; }
-          done
-          echo "All DIY + overlay shell scripts pass dash -n" >> "$GITHUB_STEP_SUMMARY"
+          echo "All overlay + DIY shell scripts pass dash -n" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install files overlay
+        run: |
+          set -Eeuo pipefail
+          cd openwrt
+          cp -a ../files/. files/
+          # Per-device overlay (static wireless) on top of the shared one.
+          cp -a "../files-${{ env.DEVICE }}/." files/
+          chmod +x files/etc/uci-defaults/* 2>/dev/null || true
+          chmod 0600 files/etc/shadow
+          echo "Overlay installed: shared files/ + files-${{ env.DEVICE }}/" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download sources
         run: |
@@ -475,7 +458,7 @@ jobs:
             Images: `factory.bin` (first install) + `sysupgrade.bin` (upgrade from a running OpenWrt build).
             Flashing: see the README's 刷机与首次开机 section. **Do NOT flash the other device's image — RE-SS-01 and RE-CS-02 are different hardware.**
 
-            Defaults: WiFi OpenWrt / OpenWrt_5G, key `12345678`; root password `password` (change after flashing); LAN 192.168.1.1; hostname OpenWrt.
+            Defaults: WiFi unconfigured; root password `password` (change after flashing); LAN 192.168.1.1; hostname LibWrt. sing-box installed, unconfigured — run it from the command line with your own config (SFTP is available for uploading the config file).
           artifacts: "artifact/${{ env.DEVICE }}-squashfs-factory.bin,artifact/${{ env.DEVICE }}-squashfs-sysupgrade.bin"
           draft: true
           allowUpdates: false

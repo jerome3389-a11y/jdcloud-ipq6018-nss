@@ -14,20 +14,22 @@
 #      SagerNet release on every build and rewrite the feed
 #      package's PKG_VERSION + PKG_HASH in place; recorded in
 #      third-party-sources.txt via SINGBOX_VERSION.
-#   5. Fetch PassWall (latest master) after removing the feed's
-#      copy of luci-app-passwall (user decision 2026-11-06: try
-#      PassWall; it REPLACES HomeProxy — both manage sing-box and
-#      would conflict; recorded in third-party-sources.txt).
-#   6. Fork sysctl tunings (min_free_kbytes / swappiness /
+#   5. Fork sysctl tunings (min_free_kbytes / swappiness /
 #      netdev_max_backlog / printk) on the tree's sysctl.conf.
-#   7. Fork rc.local additions (LRU_GEN enable + noatime remount).
+#   6. Fork rc.local additions (LRU_GEN enable + noatime remount).
 #
 # Standing rule (user decision 2026-11-06): ALL plugins and
 # software use the LATEST version on every build, automatically.
-# That is why Argon, Athena LED, PassWall and sing-box are all
+# That is why Argon, Athena LED and sing-box are all
 # fetched at their latest on every build (master / latest release),
 # never a pinned commit. The base tree and the feeds stay PINNED
 # (reproducible core); only the plugins/software float to latest.
+#
+# PassWall was tried (user decision 2026-11-06 "Passwall试试") and
+# REMOVED by user decision 2026-11-08 ("不要passwall了"): the user
+# runs sing-box directly from the command line and loads his own
+# config; no LuCI proxy manager is installed, so nothing here
+# fetches it.
 #
 # What it deliberately does NOT do (fork features left out — see the
 # parity table and the notes at the end of this script): no LAN IP /
@@ -219,35 +221,7 @@ fi
 printf 'sing-box latest: %s (sha256 %s)\n' "$SINGBOX_VERSION" "$SINGBOX_HASH"
 printf 'SINGBOX_VERSION=%s\n' "$SINGBOX_VERSION" >> "$GITHUB_ENV"
 
-# --- 5. PassWall (user decision 2026-11-06: "Passwall试试") ---
-# Replaces HomeProxy (removed by the same decision). HomeProxy is a
-# light sing-box-only manager; PassWall is the community-standard
-# multi-protocol manager (sing-box / Xray / V2Ray / Trojan /
-# Shadowsocks, subscriptions, load balancing, ACL rules). Both
-# manage sing-box, so they CONFLICT — only one is installed.
-# PassWall is fetched at latest master on every build (standing rule
-# 2026-11-06), from the Openwrt-Passwall org — the project moved
-# from xiaorouji in 2026 (the old xiaorouji/openwrt-passwall URL
-# 404s). The repo is a feed whose luci-app-passwall lives in a
-# subdirectory, so fetch_source clones it to a temp dir and the
-# subdir is copied into package/ (the feed's copy is removed first,
-# otherwise the package would be defined twice and the build fails).
-# The config enables INCLUDE_SingBox so PassWall uses the sing-box
-# core (updated to latest by §4 above). The feed's Go (1.26/1.27)
-# satisfies sing-box 1.14.4's go.mod requirement (go 1.25.5), so no
-# golang fetch is needed. Installed but unconfigured by default;
-# the user adds a node in LuCI to enable it.
-rm -rf feeds/luci/applications/luci-app-passwall
-rm -rf package/luci-app-passwall
-fetch_source https://github.com/Openwrt-Passwall/openwrt-passwall package/.passwall-upstream luci-app-passwall/Makefile main PASSWALL_COMMIT
-cp -r package/.passwall-upstream/luci-app-passwall package/luci-app-passwall
-rm -rf package/.passwall-upstream
-if [ ! -f "package/luci-app-passwall/Makefile" ]; then
-    printf 'PassWall copy failed: package/luci-app-passwall/Makefile missing\n' >&2
-    exit 1
-fi
-
-# --- 6. Fork sysctl tunings (fail loudly if the target is absent) ---
+# --- 5. Fork sysctl tunings (fail loudly if the target is absent) ---
 # Copied from the fork's set_sysctl (awk rewrite that drops any
 # existing line for the key, then appends key=value). The target
 # package/base-files/files/etc/sysctl.conf EXISTS in the pinned tree
@@ -281,7 +255,7 @@ set_sysctl vm.swappiness 10
 set_sysctl net.core.netdev_max_backlog 10000
 set_sysctl kernel.printk '0 0 0 0'
 
-# --- 7. Fork rc.local additions (fail loudly if the target is absent) ---
+# --- 6. Fork rc.local additions (fail loudly if the target is absent) ---
 # Copied from the fork's ensure_rc_command: each command is inserted
 # before 'exit 0' exactly once (idempotent on re-runs). The target
 # package/base-files/files/etc/rc.local EXISTS in the pinned tree
@@ -313,7 +287,7 @@ ensure_rc_command() {
 ensure_rc_command 'echo 7 > /sys/kernel/mm/lru_gen/enabled'
 ensure_rc_command 'mount -o remount,noatime,nodiratime /'
 
-# --- 8. Fork tunings NOT applied (targets absent in the pinned tree) ---
+# --- 7. Fork tunings NOT applied (targets absent in the pinned tree) ---
 # Log settings (circular, size 64) and the cpufreq performance
 # governor are SKIPPED, not silently skipped: the fork's steps guard
 # them with `if [ -f ... ]` and print "Skipping…" when the file is
