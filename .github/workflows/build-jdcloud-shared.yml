@@ -215,6 +215,26 @@ jobs:
           # Record the exact feed commits actually installed.
           ./scripts/feeds list -r | sort > ../feeds-installed.txt || true
 
+      - name: Apply ath11k patch
+        run: |
+          set -Eeuo pipefail
+          # Anchor: the 998-ath11k patch was verified against
+          # backports 6.18.55 only. If the base tree moves mac80211 to
+          # another backports version, fail here instead of applying
+          # a patch against the wrong source — never skip silently.
+          BP_VER=$(grep '^PKG_VERSION:=' openwrt/package/kernel/mac80211/Makefile | cut -d'=' -f2 | tr -d ' ')
+          [ "$BP_VER" = "6.18.55" ] || { echo "::error::mac80211 backports version is $BP_VER, expected 6.18.55 — 998-ath11k patch not verified for it" >&2; exit 1; }
+          echo "mac80211 backports version OK: $BP_VER"
+          # The base tree applies patches/ath11k/ in lexical order at
+          # Build/Prepare (PatchDir in the mac80211 Makefile), after
+          # the in-tree 983 VHT-for-2G patch — 998 sorts after it.
+          ATH11K_DIR="openwrt/package/kernel/mac80211/patches/ath11k"
+          [ -d "$ATH11K_DIR" ] || { echo "::error::ath11k patch dir missing: $ATH11K_DIR" >&2; exit 1; }
+          P=998-ath11k-dp-rx-frag-double-free.patch
+          test -f "patches/$P" || { echo "::error::Missing patch file: patches/$P" >&2; exit 1; }
+          cp "patches/$P" "$ATH11K_DIR/$P"
+          ls -l "$ATH11K_DIR"/998-ath11k-*.patch
+
       - name: Load custom configuration (DIY script)
         run: |
           set -Eeuo pipefail
